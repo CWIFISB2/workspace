@@ -34,6 +34,7 @@ env:
   JAVA_VERSION: '21'
   NODE_VERSION: '22'
   ANDROID_NDK_VERSION: '25.1.8937393'
+  ANDROID_NDK_VERSION_2: '27.0.12077973'
   ANDROID_CMAKE_VERSION: '3.22.1'
   ANDROID_API_LEVEL: '26'
   RUST_VERSION: '1.88.0'
@@ -60,13 +61,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== HEAD ==="
           git log -1 --oneline
-          echo "=== 关键文件 ==="
           for f in settings.gradle.kts build.gradle.kts gradlew gradle.properties app/build.gradle.kts; do
             if [ -e "$f" ]; then echo "OK   $f"; else echo "MISS $f"; fi
           done
-          echo "=== 工作区体积 ==="
           du -sh . 2>/dev/null || true
 
       - name: Set up Python
@@ -81,7 +79,7 @@ jobs:
           git submodule sync -- terminal || true
           git submodule update --init --recursive --depth 1 terminal || echo "SUBMODULE_SKIP"
           git submodule status -- terminal || true
-          ls -la terminal 2>/dev/null | head -5 || echo "terminal dir empty"
+          ls terminal/build.gradle.kts 2>/dev/null && echo "terminal OK"
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -100,10 +98,11 @@ jobs:
         with:
           packages: ''
 
-      - name: Install Android SDK, NDK and CMake
+      - name: Install Android SDK, NDK (both versions) and CMake
         shell: bash
         run: |
           set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
@@ -112,6 +111,18 @@ jobs:
             "build-tools;35.0.0" \
             "ndk;$ANDROID_NDK_VERSION" \
             "cmake;$ANDROID_CMAKE_VERSION"
+          printf '\n=== 安装 AGP 推断的 NDK 27 ===\n'
+          set +e
+          for attempt in 1 2 3; do
+            printf 'attempt %s\n' "$attempt"
+            sdkmanager --install "ndk;$ANDROID_NDK_VERSION_2" && break
+            printf 'retry after failure\n'
+            rm -rf "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION_2" 2>/dev/null || true
+            sleep 10
+          done
+          set -e
+          printf '\n=== 已装 NDK ===\n'
+          ls "$ANDROID_HOME/ndk" || true
 
       - name: Restore Android CMake source cache
         uses: actions/cache@v4
@@ -200,6 +211,17 @@ jobs:
           set -euo pipefail
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+      - name: Pre-flight NDK check
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== ndk 目录 ==="
+          ls -la "$ANDROID_HOME/ndk" || true
+          echo "=== 25.1 存在? ==="
+          test -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" && echo YES || echo NO
+          echo "=== 27.0 存在? ==="
+          test -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION_2" && echo YES || echo NO
+
       - name: Run Gradle build
         env:
           DISPATCH_GRADLE_TASK: ${{ inputs.gradle_task }}
@@ -208,7 +230,6 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
-            push) gradle_task=assembleDebug ;;
             workflow_dispatch) gradle_task="${DISPATCH_GRADLE_TASK:-assembleDebug}" ;;
             *) gradle_task=assembleDebug ;;
           esac
